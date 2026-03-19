@@ -90,25 +90,25 @@ fn collect_files(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use more_asserts::assert_ge;
     use tempfile::tempdir;
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_stats_dry_run() {
-        let work_dir = tempdir().unwrap();
+    fn make_translator(cas_dir: &tempfile::TempDir) -> Arc<TranslatorConfig> {
+        let endpoint = format!("local://{}", cas_dir.path().display());
+        crate::session::build_translator_config(&endpoint).unwrap()
+    }
 
-        // 3 copies of the same 1KB block to trigger dedup.
+    #[tokio::test]
+    async fn test_stats_dry_run_single_file() {
+        let work_dir = tempdir().unwrap();
         let src = work_dir.path().join("data.bin");
-        let block = vec![42u8; 1024];
-        let mut content = block.clone();
-        content.extend_from_slice(&block);
-        content.extend_from_slice(&block);
+        let content = vec![42u8; 3072];
         std::fs::write(&src, &content).unwrap();
 
         let cas_dir = tempdir().unwrap();
-        let endpoint = format!("local://{}", cas_dir.path().display());
-        let config = crate::session::build_translator_config(&endpoint).unwrap();
+        let config = make_translator(&cas_dir);
 
         let args = StatsArgs {
             files: vec![src],
@@ -116,6 +116,87 @@ mod tests {
             output: None,
         };
         let metrics = run_stats(config, &args).await.unwrap();
-        assert!(metrics.total_bytes > 0);
+        assert_eq!(metrics.total_bytes, 3072);
+        assert_ge!(metrics.new_bytes + metrics.deduped_bytes, metrics.total_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_stats_multiple_files() {
+        let work_dir = tempdir().unwrap();
+        let sizes: Vec<usize> = vec![1024, 2048, 4096];
+        let files: Vec<PathBuf> = sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &sz)| {
+                let path = work_dir.path().join(format!("file_{i}.bin"));
+                std::fs::write(&path, vec![(i as u8).wrapping_add(1); sz]).unwrap();
+                path
+            })
+            .collect();
+
+        let cas_dir = tempdir().unwrap();
+        let config = make_translator(&cas_dir);
+
+        let args = StatsArgs {
+            files,
+            recursive: false,
+            output: None,
+        };
+        let metrics = run_stats(config, &args).await.unwrap();
+        let expected_total: u64 = sizes.iter().map(|&s| s as u64).sum();
+        assert_eq!(metrics.total_bytes, expected_total);
+    }
+
+    #[tokio::test]
+    async fn test_stats_recursive_directory() {
+        let work_dir = tempdir().unwrap();
+        let sub = work_dir.path().join("subdir");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(work_dir.path().join("a.bin"), vec![1u8; 512]).unwrap();
+        std::fs::write(sub.join("b.bin"), vec![2u8; 256]).unwrap();
+
+        let cas_dir = tempdir().unwrap();
+        let config = make_translator(&cas_dir);
+
+        let args = StatsArgs {
+            files: vec![work_dir.path().to_path_buf()],
+            recursive: true,
+            output: None,
+        };
+        let metrics = run_stats(config, &args).await.unwrap();
+        assert_eq!(metrics.total_bytes, 768);
+    }
+
+    #[tokio::test]
+    async fn test_stats_json_output() {
+        let work_dir = tempdir().unwrap();
+        let src = work_dir.path().join("data.bin");
+        std::fs::write(&src, vec![99u8; 2048]).unwrap();
+
+        let cas_dir = tempdir().unwrap();
+        let config = make_translator(&cas_dir);
+
+        let out_dir = tempdir().unwrap();
+        let json_path = out_dir.path().join("stats.json");
+
+        let args = StatsArgs {
+            files: vec![src],
+            recursive: false,
+            output: Some(json_path.clone()),
+        };
+        let metrics = run_stats(config, &args).await.unwrap();
+
+        // Replicate the JSON write from `run`:
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "total_bytes": metrics.total_bytes,
+            "new_bytes": metrics.new_bytes,
+            "deduped_bytes": metrics.deduped_bytes,
+            "total_bytes_uploaded": metrics.total_bytes_uploaded,
+        }))
+        .unwrap();
+        std::fs::write(&json_path, &json).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+        assert_eq!(parsed["total_bytes"], 2048);
     }
 }

@@ -64,24 +64,33 @@ mod tests {
 
     use super::*;
 
-    // build_xet_session with a local:// endpoint should not error
     #[tokio::test]
     async fn test_build_session_local() {
         let dir = tempdir().unwrap();
         let endpoint = format!("local://{}", dir.path().display());
-        let config = xet_runtime::config::XetConfig::new();
+        let config = XetConfig::new();
         let session = build_xet_session(&endpoint, None, config).await;
-        if let Err(e) = session {
-            panic!("expected Ok, got Err: {e}");
-        }
+        assert!(session.is_ok(), "expected Ok, got {:?}", session.err());
     }
 
-    // build_translator_config with a local path creates dirs and returns Ok
     #[test]
     fn test_build_translator_config_local() {
         let dir = tempdir().unwrap();
         let endpoint = format!("local://{}", dir.path().display());
-        let cfg = build_translator_config(&endpoint);
-        assert!(cfg.is_ok());
+        assert!(build_translator_config(&endpoint).is_ok());
+    }
+
+    #[test]
+    fn test_build_translator_config_remote_fallback() {
+        let result = build_translator_config("https://example.com");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_build_cas_client_local() {
+        let dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", dir.path().display());
+        let client = build_cas_client(&endpoint, None).await;
+        assert!(client.is_ok(), "expected Ok, got {:?}", client.err());
     }
 }

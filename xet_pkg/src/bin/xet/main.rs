@@ -17,21 +17,21 @@ const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 #[derive(Parser)]
 #[command(name = "xet", version)]
 pub struct Cli {
-    /// CAS endpoint URL or local path.
-    /// - https://...          remote server
-    /// - /absolute/path       local disk store (normalized to local://)
-    /// - local:///path        local disk store
+    /// CAS endpoint URL or local path (env: HF_ENDPOINT).
     ///
+    /// Accepts https:// URLs for remote servers, absolute filesystem
+    /// paths (auto-prefixed with local://), or explicit local:// URLs.
     /// Defaults to HF_ENDPOINT env var, then https://huggingface.co.
     #[arg(long, global = true)]
     pub endpoint: Option<String>,
 
-    /// Auth token for remote endpoints.
-    /// Defaults to HF_TOKEN env var. Not required for local endpoints.
+    /// Auth token for remote endpoints (env: HF_TOKEN).
+    ///
+    /// Falls back to HF_TOKEN env var. Not needed for local endpoints.
     #[arg(long, global = true)]
     pub token: Option<String>,
 
-    /// Override a xet_config value: -c group.name=value. May be repeated.
+    /// Override a xet_config value. May be repeated.
     #[arg(short = 'c', long = "config", global = true, value_name = "KEY=VALUE")]
     pub config_overrides: Vec<String>,
 
@@ -125,17 +125,17 @@ mod tests {
     use super::normalize_endpoint;
 
     #[test]
-    fn test_normalize_endpoint_absolute_path() {
-        assert_eq!(normalize_endpoint("/tmp/cas"), "local:///tmp/cas");
-    }
-
-    #[test]
-    fn test_normalize_endpoint_local_scheme() {
-        assert_eq!(normalize_endpoint("local:///tmp/cas"), "local:///tmp/cas");
-    }
-
-    #[test]
-    fn test_normalize_endpoint_https() {
-        assert_eq!(normalize_endpoint("https://cas.example.com"), "https://cas.example.com");
+    fn test_normalize_endpoint() {
+        let cases = [
+            ("/tmp/cas", "local:///tmp/cas"),
+            ("/", "local:///"),
+            ("local:///tmp/cas", "local:///tmp/cas"),
+            ("https://cas.example.com", "https://cas.example.com"),
+            ("http://localhost:8080", "http://localhost:8080"),
+            ("relative/path", "relative/path"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_endpoint(input), expected, "input: {input}");
+        }
     }
 }

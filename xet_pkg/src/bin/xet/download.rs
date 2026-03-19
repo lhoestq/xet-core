@@ -10,13 +10,13 @@ use super::Cli;
 
 #[derive(Args)]
 pub struct DownloadArgs {
-    /// Hex-encoded MerkleHash of the file to download.
+    /// Hex-encoded MerkleHash of the file (from `xet upload` output).
     pub hash: String,
 
-    /// File size in bytes (required to construct XetFileInfo).
+    /// Expected file size in bytes (from `xet upload` or `xet query` output).
     pub size: u64,
 
-    /// Destination path.
+    /// Destination file path. Parent directories are created if needed.
     pub output: PathBuf,
 }
 
@@ -38,8 +38,15 @@ pub async fn run_download(session: XetSession, args: &DownloadArgs) -> Result<()
     };
 
     let group = session.new_download_group().await?;
-    group.download_file_to_path(file_info, args.output.clone()).await?;
-    group.finish().await?;
+    let handle = group.download_file_to_path(file_info, args.output.clone()).await?;
+    let results = group.finish().await?;
+
+    // Check the per-task result so download errors surface with their real cause
+    // rather than a confusing "file not found" from the metadata check below.
+    let task_result = results.get(&handle.task_id).context("no download result returned")?;
+    if let Err(e) = task_result.as_ref() {
+        anyhow::bail!("download failed for {}: {e}", args.hash);
+    }
 
     let bytes = std::fs::metadata(&args.output)
         .context("output file not found after download")?
@@ -57,40 +64,60 @@ mod tests {
     use crate::session::build_xet_session;
     use crate::upload::{UploadArgs, run_upload};
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_download_roundtrip() {
-        let cas_dir = tempdir().unwrap();
+    /// Helper: upload content, return (endpoint, hash, file_size).
+    async fn upload_test_file(cas_dir: &tempfile::TempDir, name: &str, content: &[u8]) -> (String, String, u64) {
         let endpoint = format!("local://{}", cas_dir.path().display());
-
-        // Upload a file first.
         let src_dir = tempdir().unwrap();
-        let src = src_dir.path().join("data.bin");
-        let content = b"download test content 12345";
+        let src = src_dir.path().join(name);
         std::fs::write(&src, content).unwrap();
 
-        let config = xet_runtime::config::XetConfig::new();
-        let session = build_xet_session(&endpoint, None, config.clone()).await.unwrap();
+        let config = XetConfig::new();
+        let session = build_xet_session(&endpoint, None, config).await.unwrap();
         let upload_args = UploadArgs {
             files: vec![src],
-            sha256: false,
+            no_sha256: true,
             output: None,
         };
         let results = run_upload(session, &upload_args).await.unwrap();
         let meta = &results[0];
+        (endpoint, meta.hash.clone(), meta.file_size)
+    }
 
-        // Now download it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_download_roundtrip() {
+        let cas_dir = tempdir().unwrap();
+        let content = b"download test content 12345";
+        let (endpoint, hash, size) = upload_test_file(&cas_dir, "data.bin", content).await;
+
         let dest_dir = tempdir().unwrap();
         let dest = dest_dir.path().join("out.bin");
 
-        let session2 = build_xet_session(&endpoint, None, config).await.unwrap();
+        let session = build_xet_session(&endpoint, None, XetConfig::new()).await.unwrap();
         let args = DownloadArgs {
-            hash: meta.hash.clone(),
-            size: meta.file_size,
+            hash,
+            size,
             output: dest.clone(),
         };
-        run_download(session2, &args).await.unwrap();
+        run_download(session, &args).await.unwrap();
 
-        let downloaded = std::fs::read(&dest).unwrap();
-        assert_eq!(downloaded, content);
+        assert_eq!(std::fs::read(&dest).unwrap(), content);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_download_invalid_hash_returns_error() {
+        let cas_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", cas_dir.path().display());
+
+        let dest_dir = tempdir().unwrap();
+        let dest = dest_dir.path().join("should_not_exist.bin");
+
+        let session = build_xet_session(&endpoint, None, XetConfig::new()).await.unwrap();
+        let args = DownloadArgs {
+            hash: "0".repeat(64),
+            size: 100,
+            output: dest.clone(),
+        };
+        let result = run_download(session, &args).await;
+        assert!(result.is_err());
     }
 }
