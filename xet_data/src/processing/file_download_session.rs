@@ -217,10 +217,7 @@ impl FileDownloadSession {
         let id = UniqueID::new();
         let progress_updater = self.progress.new_item(id, "unordered_stream");
         let range = source_range.map(|r| FileRange::new(r.start, r.end));
-        let expected_bytes = range
-            .as_ref()
-            .map(|r| r.end - r.start)
-            .or_else(|| file_info.file_size());
+        let expected_bytes = range.as_ref().map(|r| r.end - r.start).or_else(|| file_info.file_size());
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let mut stream = reconstructor.reconstruct_to_unordered_stream();
         if let Some(bytes) = expected_bytes {

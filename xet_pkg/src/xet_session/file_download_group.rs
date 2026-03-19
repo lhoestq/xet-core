@@ -309,7 +309,7 @@ impl FileDownloadGroupInner {
                         dest_path: handle.dest_path,
                         file_info: XetFileInfo {
                             hash: handle.file_info.hash,
-                            file_size: n_bytes,
+                            file_size: Some(n_bytes),
                             sha256: None,
                         },
                     }));

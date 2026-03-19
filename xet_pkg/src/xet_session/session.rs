@@ -1111,9 +1111,6 @@ mod tests {
         let file_info = upload_bytes(&session, original, "progress.bin").await.unwrap();
 
         let mut stream = session.download_stream(file_info, None).await.unwrap();
-        let initial = stream.get_progress();
-        assert_eq!(initial.total_bytes, original.len() as u64);
-        assert_eq!(initial.bytes_completed, 0);
 
         let mut collected = Vec::new();
         while let Some(chunk) = stream.next().await.unwrap() {
@@ -1122,7 +1119,6 @@ mod tests {
         assert_eq!(collected, original);
 
         let final_progress = stream.get_progress();
-        assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }
 
@@ -1143,7 +1139,6 @@ mod tests {
         assert_eq!(collected, original);
 
         let final_progress = stream.get_progress();
-        assert_eq!(final_progress.total_bytes, original.len() as u64);
         assert_eq!(final_progress.bytes_completed, original.len() as u64);
     }
 

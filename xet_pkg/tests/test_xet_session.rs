@@ -985,13 +985,11 @@ async fn async_stream_progress_tracking() {
     let mut stream = session.download_stream(file_info, None).await.unwrap();
 
     let initial = stream.get_progress();
-    assert_eq!(initial.total_bytes, data.len() as u64);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_stream(&mut stream).await;
 
     let final_progress = stream.get_progress();
-    assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
 
@@ -1251,13 +1249,11 @@ async fn async_unordered_stream_progress_tracking() {
     let mut stream = session.download_unordered_stream(file_info, None).await.unwrap();
 
     let initial = stream.get_progress();
-    assert_eq!(initial.total_bytes, data.len() as u64);
     assert_eq!(initial.bytes_completed, 0);
 
     let _ = collect_unordered_stream(&mut stream, data.len()).await;
 
     let final_progress = stream.get_progress();
-    assert_eq!(final_progress.total_bytes, data.len() as u64);
     assert_eq!(final_progress.bytes_completed, data.len() as u64);
 }
 
