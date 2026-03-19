@@ -46,7 +46,7 @@ fn sync_session(temp: &TempDir) -> XetSession {
 fn to_file_info(meta: &FileMetadata) -> XetFileInfo {
     XetFileInfo {
         hash: meta.hash.clone(),
-        file_size: meta.file_size,
+        file_size: Some(meta.file_size),
         sha256: meta.sha256.clone(),
     }
 }
@@ -74,7 +74,7 @@ fn upload_bytes_sync(session: &XetSession, data: &[u8], name: &str) -> XetFileIn
 
 async fn assert_roundtrip_async(session: &XetSession, temp: &TempDir, data: &[u8], name: &str) {
     let file_info = upload_bytes_async(session, data, name).await;
-    assert_eq!(file_info.file_size, data.len() as u64);
+    assert_eq!(file_info.file_size, Some(data.len() as u64));
 
     let dest = temp.path().join(format!("{name}.out"));
     let group = session.new_file_download_group().await.unwrap();
@@ -85,7 +85,7 @@ async fn assert_roundtrip_async(session: &XetSession, temp: &TempDir, data: &[u8
 
 fn assert_roundtrip_sync(session: &XetSession, temp: &TempDir, data: &[u8], name: &str) {
     let file_info = upload_bytes_sync(session, data, name);
-    assert_eq!(file_info.file_size, data.len() as u64);
+    assert_eq!(file_info.file_size, Some(data.len() as u64));
 
     let dest = temp.path().join(format!("{name}.out"));
     let group = session.new_file_download_group_blocking().unwrap();
@@ -384,6 +384,27 @@ async fn async_progress_tracking() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_download_unknown_size_roundtrip() {
+    let temp = tempdir().unwrap();
+    let session = async_session(&temp).await;
+    let data = b"download with unknown size via xet_pkg";
+    let file_info = upload_bytes_async(&session, data, "unknown_size.bin").await;
+
+    let hash_only = XetFileInfo::new_hash_only(file_info.hash().to_string());
+
+    let dest = temp.path().join("unknown_size.out");
+    let group = session.new_file_download_group().await.unwrap();
+    group.download_file_to_path(hash_only, dest.clone()).await.unwrap();
+    let results = group.finish().await.unwrap();
+
+    for result in results.values() {
+        let dl = result.as_ref().as_ref().unwrap();
+        assert_eq!(dl.file_info.file_size, Some(data.len() as u64));
+    }
+    assert_eq!(fs::read(&dest).unwrap(), data);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_download_invalid_hash_fails() {
     let temp = tempdir().unwrap();
     let session = async_session(&temp).await;
@@ -393,7 +414,7 @@ async fn async_download_invalid_hash_fails() {
         .download_file_to_path(
             XetFileInfo {
                 hash: "nonexistent_hash_abc123".to_string(),
-                file_size: 100,
+                file_size: Some(100),
                 sha256: None,
             },
             temp.path().join("missing.bin"),
@@ -862,7 +883,7 @@ async fn async_abort_rejects_download_on_existing_group() {
         .download_file_to_path(
             XetFileInfo {
                 hash: "abc".to_string(),
-                file_size: 1,
+                file_size: Some(1),
                 sha256: None,
             },
             PathBuf::from("dest.bin"),
@@ -1013,7 +1034,7 @@ async fn async_stream_aborted_session() {
         .download_stream(
             XetFileInfo {
                 hash: "abc".to_string(),
-                file_size: 1,
+                file_size: Some(1),
                 sha256: None,
             },
             None,
@@ -1102,7 +1123,7 @@ fn blocking_stream_aborted_session() {
     let result = session.download_stream_blocking(
         XetFileInfo {
             hash: "abc".to_string(),
-            file_size: 1,
+            file_size: Some(1),
             sha256: None,
         },
         None,
@@ -1116,7 +1137,7 @@ async fn external_mode_blocking_stream_returns_wrong_mode() {
     let result = session.download_stream_blocking(
         XetFileInfo {
             hash: "abc".to_string(),
-            file_size: 1,
+            file_size: Some(1),
             sha256: None,
         },
         None,
@@ -1262,7 +1283,7 @@ async fn async_unordered_stream_aborted_session() {
         .download_unordered_stream(
             XetFileInfo {
                 hash: "abc".to_string(),
-                file_size: 1,
+                file_size: Some(1),
                 sha256: None,
             },
             None,
@@ -1334,7 +1355,7 @@ fn blocking_unordered_stream_aborted_session() {
     let result = session.download_unordered_stream_blocking(
         XetFileInfo {
             hash: "abc".to_string(),
-            file_size: 1,
+            file_size: Some(1),
             sha256: None,
         },
         None,
@@ -1348,7 +1369,7 @@ async fn external_mode_blocking_unordered_stream_returns_wrong_mode() {
     let result = session.download_unordered_stream_blocking(
         XetFileInfo {
             hash: "abc".to_string(),
-            file_size: 1,
+            file_size: Some(1),
             sha256: None,
         },
         None,

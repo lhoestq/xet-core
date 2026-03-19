@@ -33,7 +33,7 @@ pub async fn run_download(session: XetSession, args: &DownloadArgs) -> Result<()
 
     let file_info = XetFileInfo {
         hash: args.hash.clone(),
-        file_size: args.size,
+        file_size: Some(args.size),
         sha256: None,
     };
 

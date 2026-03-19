@@ -539,7 +539,10 @@ impl XetSession {
         let session = self.clone();
         self.dispatch("download_stream", async move {
             let dl_session = session.get_or_init_streaming_session().await?;
-            let (id, stream) = dl_session.download_stream(&file_info, range).await?;
+            let (id, stream) = match range {
+                Some(r) => dl_session.download_stream_range(&file_info, r).await?,
+                None => dl_session.download_stream(&file_info).await?,
+            };
             Ok(XetDownloadStream::new(stream, dl_session, id))
         })
         .await?
@@ -573,7 +576,10 @@ impl XetSession {
         let session = self.clone();
         self.runtime.external_run_async_task(async move {
             let dl_session = session.get_or_init_streaming_session().await?;
-            let (id, stream) = dl_session.download_stream(&file_info, range).await?;
+            let (id, stream) = match range {
+                Some(r) => dl_session.download_stream_range(&file_info, r).await?,
+                None => dl_session.download_stream(&file_info).await?,
+            };
             Ok(XetDownloadStream::new(stream, dl_session, id))
         })?
     }
@@ -968,7 +974,7 @@ mod tests {
             .download_stream(
                 XetFileInfo {
                     hash: "abc123".to_string(),
-                    file_size: 1024,
+                    file_size: Some(1024),
                     sha256: None,
                 },
                 None,
@@ -985,7 +991,7 @@ mod tests {
         let result = session.download_stream_blocking(
             XetFileInfo {
                 hash: "abc123".to_string(),
-                file_size: 1024,
+                file_size: Some(1024),
                 sha256: None,
             },
             None,
@@ -1001,7 +1007,7 @@ mod tests {
         let result = session.download_stream_blocking(
             XetFileInfo {
                 hash: "abc123".to_string(),
-                file_size: 1024,
+                file_size: Some(1024),
                 sha256: None,
             },
             None,
@@ -1042,7 +1048,7 @@ mod tests {
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
-            file_size: meta.file_size,
+            file_size: Some(meta.file_size),
             sha256: meta.sha256.clone(),
         })
     }
@@ -1058,7 +1064,7 @@ mod tests {
         let meta = results.get(&handle.task_id).unwrap().as_ref().as_ref().unwrap();
         Ok(XetFileInfo {
             hash: meta.hash.clone(),
-            file_size: meta.file_size,
+            file_size: Some(meta.file_size),
             sha256: meta.sha256.clone(),
         })
     }
