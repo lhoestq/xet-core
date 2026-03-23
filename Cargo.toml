@@ -20,9 +20,10 @@ members = [
     "utils",
     "xet_logging",
     "xet_runtime",
+    "hf_xet",
 ]
 
-exclude = ["chunk_cache_bench", "hf_xet", "hf_xet_wasm", "hf_xet_thin_wasm"]
+exclude = ["chunk_cache_bench", "hf_xet_wasm", "hf_xet_thin_wasm"]
 
 [profile.release]
 opt-level = 3

@@ -9,6 +9,7 @@ use tracing::{debug, info};
 use xet_config::ReconstructionConfig;
 use xet_runtime::{GlobalSemaphoreHandle, XetRuntime, global_semaphore_handle, xet_config};
 
+use crate::FileTerm;
 use crate::data_writer::{DataOutput, new_data_writer};
 use crate::error::{FileReconstructionError, Result};
 use crate::reconstruction_terms::ReconstructionTermManager;
@@ -23,6 +24,13 @@ lazy_static::lazy_static! {
 
     static ref RECONSTRUCTION_DOWNLOAD_BUFFER_LIMITER: GlobalSemaphoreHandle =
         global_semaphore_handle!(*RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE);
+}
+
+pub struct ReconstructionSummary {
+    pub block_count: u64,
+    pub total_terms_processed: u64,
+    pub total_bytes_scheduled: u64,
+    pub file_terms: Vec<FileTerm>
 }
 
 /// Reconstructs a file from its content-addressed chunks by downloading xorb blocks
@@ -219,6 +227,104 @@ impl FileReconstructor {
         info!(bytes_written, "File reconstruction completed successfully");
 
         Ok(bytes_written)
+    }
+}
+
+/// Dry reconstructs a file from its content-addressed chunks by fetching xorb blocks info
+/// but without the reassembled data. Supports byte range requests and
+/// uses memory-limited buffering with adaptive prefetching.
+pub struct DryFileReconstructor {
+    client: Arc<dyn Client>,
+    file_hash: MerkleHash,
+    byte_range: Option<FileRange>,
+    config: Arc<ReconstructionConfig>,
+}
+
+impl DryFileReconstructor {
+    pub fn new(client: &Arc<dyn Client>, file_hash: MerkleHash) -> Self {
+        Self {
+            client: client.clone(),
+            file_hash,
+            byte_range: None,
+            config: Arc::new(xet_config().reconstruction.clone()),
+        }
+    }
+
+    pub fn with_byte_range(self, byte_range: FileRange) -> Self {
+        Self {
+            byte_range: Some(byte_range),
+            ..self
+        }
+    }
+
+    /// Simulate the file reconstruction.
+    /// Returns the file terms.
+    pub async fn dry_run(self) -> Result<ReconstructionSummary> {
+        info!(
+            file_hash = %self.file_hash,
+            byte_range = ?self.byte_range,
+            "Starting file dry reconstruction"
+        );
+
+        let Self {
+            client,
+            file_hash,
+            byte_range,
+            config,
+        } = self;
+
+        let requested_range = byte_range.unwrap_or_else(FileRange::full);
+
+        let mut term_manager =
+            ReconstructionTermManager::new(config.clone(), client.clone(), file_hash, requested_range).await?;
+
+
+        // Tracking for summary stats.
+        let mut total_terms_processed: u64 = 0;
+        let mut total_bytes_scheduled: u64 = 0;
+        let mut block_count: u64 = 0;
+        let mut file_terms: Vec<FileTerm> = vec![];
+
+        // Outer loop: retrieve blocks of file terms.
+        while let Some(block_file_terms) = term_manager.next_file_terms().await? {
+            let block_term_count = block_file_terms.len();
+            let block_start = block_file_terms.first().map(|t| t.byte_range.start).unwrap_or(0);
+            let block_end = block_file_terms.last().map(|t| t.byte_range.end).unwrap_or(0);
+            let block_bytes = block_end.saturating_sub(block_start);
+
+            block_count += 1;
+            info!(
+                block_number = block_count,
+                term_count = block_term_count,
+                block_byte_range = ?(block_start, block_end),
+                block_bytes,
+                "Begin processing on block of file terms."
+            );
+
+            // Inner loop: process each file term in the block.
+            for file_term in block_file_terms {
+                // Calculate the number of bytes this term will use.
+                let term_size = (file_term.byte_range.end - file_term.byte_range.start) as u32;
+
+                debug!(
+                    xorb_hash = %file_term.xorb_block.xorb_hash,
+                    term_byte_range = ?(file_term.byte_range.start, file_term.byte_range.end),
+                    term_size,
+                    "Processing file term"
+                );
+
+                total_terms_processed += 1;
+                total_bytes_scheduled += term_size as u64;
+                file_terms.push(file_term);
+            }
+        }
+
+        info!(
+            block_count,
+            total_terms_processed, total_bytes_scheduled, "All term blocks received and scheduled for writing"
+        );
+
+        Ok(ReconstructionSummary {block_count, total_terms_processed, total_bytes_scheduled, file_terms})
     }
 }
 

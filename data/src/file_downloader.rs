@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use cas_client::Client;
 use cas_types::FileRange;
-use file_reconstruction::{DataOutput, FileReconstructor};
+use file_reconstruction::{DataOutput, DryFileReconstructor, FileReconstructor, ReconstructionSummary};
 use merklehash::MerkleHash;
 use progress_tracking::item_tracking::ItemProgressUpdater;
 use tracing::instrument;
@@ -55,5 +55,22 @@ impl FileDownloader {
         prometheus_metrics::FILTER_BYTES_SMUDGED.inc_by(n_bytes);
 
         Ok(n_bytes)
+    }
+
+    #[instrument(skip_all, name = "FileDownloader::dry_smudge_file_from_hash", fields(hash=file_id.hex()))]
+    pub async fn dry_smudge_file_from_hash(
+        &self,
+        file_id: &MerkleHash,
+        range: Option<FileRange>,
+    ) -> Result<ReconstructionSummary> {
+        let mut reconstructor = DryFileReconstructor::new(&self.client, *file_id);
+
+        if let Some(range) = range {
+            reconstructor = reconstructor.with_byte_range(range);
+        }
+
+        let reconstruction_summary = reconstructor.dry_run().await?;
+
+        Ok(reconstruction_summary)
     }
 }

@@ -7,7 +7,7 @@ use bytes::Bytes;
 use cas_client::remote_client::PREFIX_DEFAULT;
 use cas_object::CompressionScheme;
 use deduplication::{Chunker, DeduplicationMetrics};
-use file_reconstruction::DataOutput;
+use file_reconstruction::{DataOutput, ReconstructionSummary};
 use lazy_static::lazy_static;
 use mdb_shard::Sha256;
 use merklehash::MerkleHash;
@@ -242,6 +242,36 @@ pub async fn download_async(
     Ok(paths)
 }
 
+#[instrument(skip_all, name = "data_client::download", fields(session_id = tracing::field::Empty, num_files=file_infos.len()))]
+pub async fn dry_download_async(
+    file_infos: Vec<XetFileInfo>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Arc<dyn TokenRefresher>>,
+    user_agent: String,
+) -> errors::Result<Vec<ReconstructionSummary>> {
+    let config = default_config(
+        endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
+        None,
+        token_info,
+        token_refresher,
+        user_agent,
+    )?;
+    Span::current().record("session_id", &config.session_id);
+
+    let processor = Arc::new(FileDownloader::new(config.into()).await?);
+    let smudge_file_futures = file_infos.into_iter().map(|file_info| {
+        let proc = processor.clone();
+        async move { dry_smudge_file(&proc, &file_info).await }.instrument(info_span!("download_file"))
+    });
+
+    let semaphore = XetRuntime::current().global_semaphore(*CONCURRENT_FILE_DOWNLOAD_LIMITER);
+
+    let paths = run_constrained_with_semaphore(smudge_file_futures, semaphore).await?;
+
+    Ok(paths)
+}
+
 #[instrument(skip_all, name = "clean_bytes", fields(bytes.len = bytes.len()))]
 pub async fn clean_bytes(
     processor: Arc<FileUploadSession>,
@@ -404,6 +434,18 @@ async fn smudge_file(
         .await?;
 
     Ok(file_path.to_string())
+}
+
+async fn dry_smudge_file(
+    downloader: &FileDownloader,
+    file_info: &XetFileInfo,
+) -> errors::Result<ReconstructionSummary> {
+
+    let reconstruction_summary = downloader
+        .dry_smudge_file_from_hash(&file_info.merkle_hash()?, None)
+        .await?;
+
+    Ok(reconstruction_summary)
 }
 
 #[cfg(test)]

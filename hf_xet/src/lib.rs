@@ -8,7 +8,7 @@ use std::iter::IntoIterator;
 use std::sync::Arc;
 
 use data::errors::DataProcessingError;
-use data::{XetFileInfo, data_client};
+use data::{FileTerm, ReconstructionSummary, XetFileInfo, XorbBlock, data_client};
 use itertools::Itertools;
 use progress_tracking::TrackingProgressUpdater;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
@@ -210,6 +210,43 @@ pub fn download_files(
 }
 
 #[pyfunction]
+#[pyo3(signature = (files, endpoint, token_info, token_refresher), text_signature = "(files: List[PyXetFileInfo], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]]) -> List[str]")]
+pub fn dry_download_files(
+    py: Python,
+    files: Vec<PyXetFileInfo>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Py<PyAny>>,
+) -> PyResult<Vec<PyReconstructionSummary>> {
+    let file_infos: Vec<_> = files.into_iter().map(<XetFileInfo>::from).collect();
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
+
+    let x: u64 = rand::rng().random();
+
+    async_run(py, async move {
+        debug!(
+            "Dry download call {x:x}: (PID = {}) Dry downloading {} files",
+            std::process::id(),
+            file_infos.len(),
+        );
+
+        let out: Vec<ReconstructionSummary> = data_client::dry_download_async(
+            file_infos,
+            endpoint,
+            token_info,
+            refresher.map(|v| v as Arc<_>),
+            USER_AGENT.to_string(),
+        )
+        .await
+        .map_err(convert_data_processing_error)?;
+
+        debug!("Dry download call {x:x}: Completed.");
+
+        PyResult::Ok(out.into_iter().map(PyReconstructionSummary::from).collect())
+    })
+}
+
+#[pyfunction]
 pub fn force_sigint_shutdown() -> PyResult<()> {
     // Force a signint shutdown in the case where it gets intercepted by another process.
     crate::runtime::perform_sigint_shutdown();
@@ -223,6 +260,34 @@ fn try_parse_progress_updaters(funcs: Vec<Py<PyAny>>) -> PyResult<Vec<Arc<dyn Tr
         updaters.push(wrapped as Arc<dyn TrackingProgressUpdater>);
     }
     Ok(updaters)
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyXetFileInfo {
+    #[pyo3(get)]
+    pub hash: String,
+    #[pyo3(get)]
+    pub file_size: u64,
+}
+
+#[pymethods]
+impl PyXetFileInfo {
+    #[new]
+    pub fn new(hash: String, file_size: u64) -> Self {
+        Self {
+            hash,
+            file_size,
+        }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyXetFileInfo({}, {})", self.hash, self.file_size)
+    }
 }
 
 // TODO: we won't need to subclass this in the next major version update.
@@ -326,6 +391,92 @@ impl PyXetUploadInfo {
     }
 }
 
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyReconstructionSummary {
+    #[pyo3(get)]
+    pub block_count: u64,
+    #[pyo3(get)]
+    pub total_terms_processed: u64,
+    #[pyo3(get)]
+    pub total_bytes_scheduled: u64,
+    #[pyo3(get)]
+    pub file_terms: Vec<PyFileTerm>
+}
+
+#[pymethods]
+impl PyReconstructionSummary {
+    #[new]
+    pub fn new(block_count: u64, total_terms_processed: u64, total_bytes_scheduled: u64, file_terms: Vec<PyFileTerm>) -> Self {
+        Self { block_count, total_terms_processed, total_bytes_scheduled, file_terms }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyReconstructionSummary({}, {}, {}, {:?})", self.block_count, self.total_terms_processed, self.total_bytes_scheduled, self.file_terms)
+    }
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyFileTerm {
+    #[pyo3(get)]
+    pub byte_range: Vec<u64>,
+    #[pyo3(get)]
+    pub xorb_chunk_range: Vec<u32>,
+    #[pyo3(get)]
+    pub offset_into_first_range: u64,
+    #[pyo3(get)]
+    pub xorb_block: PyXorbBlock,
+}
+
+#[pymethods]
+impl PyFileTerm {
+    #[new]
+    pub fn new(byte_range: Vec<u64>, xorb_chunk_range: Vec<u32>, offset_into_first_range: u64, xorb_block: PyXorbBlock) -> Self {
+        Self { byte_range, xorb_chunk_range, offset_into_first_range, xorb_block }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyFileTerm({:?}, {:?}, {}, {:?})", self.byte_range, self.xorb_chunk_range, self.offset_into_first_range, self.xorb_block)
+    }
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyXorbBlock {
+    #[pyo3(get)]
+    pub xorb_hash: String,
+    #[pyo3(get)]
+    pub chunk_range: Vec<u32>,
+    #[pyo3(get)]
+    pub xorb_block_index: usize,
+}
+
+#[pymethods]
+impl PyXorbBlock {
+    #[new]
+    pub fn new(xorb_hash: String, chunk_range: Vec<u32>, xorb_block_index: usize) -> Self {
+        Self { xorb_hash, chunk_range, xorb_block_index }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyXorbBlock({}, {:?}, {})", self.xorb_hash, self.chunk_range, self.xorb_block_index)
+    }
+}
+
+
 type DestinationPath = String;
 
 impl From<XetFileInfo> for PyXetUploadInfo {
@@ -343,6 +494,48 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     }
 }
 
+
+impl From<PyXetFileInfo> for XetFileInfo {
+    fn from(pf: PyXetFileInfo) -> Self {
+        Self {
+            hash: pf.hash,
+            file_size: pf.file_size,
+        }
+    }
+}
+
+impl From<ReconstructionSummary> for PyReconstructionSummary {
+    fn from(xrs: ReconstructionSummary) -> Self {
+        Self {
+            block_count: xrs.block_count,
+            total_terms_processed: xrs.total_terms_processed,
+            total_bytes_scheduled: xrs.total_bytes_scheduled,
+            file_terms: xrs.file_terms.into_iter().map(PyFileTerm::from).collect(),
+        }
+    }
+}
+
+impl From<FileTerm> for PyFileTerm {
+    fn from(xft: FileTerm) -> Self {
+        Self {
+            byte_range: vec![xft.byte_range.start, xft.byte_range.end],
+            xorb_chunk_range: vec![xft.xorb_chunk_range.start, xft.xorb_chunk_range.end],
+            offset_into_first_range: xft.offset_into_first_range,
+            xorb_block: PyXorbBlock::from(xft.xorb_block),
+        }
+    }
+}
+
+impl From<Arc<XorbBlock>> for PyXorbBlock {
+    fn from(xxb: Arc<XorbBlock>) -> Self {
+        Self {
+            xorb_hash: xxb.xorb_hash.hex(),
+            chunk_range: vec![xxb.chunk_range.start, xxb.chunk_range.end],
+            xorb_block_index: xxb.xorb_block_index,
+        }
+    }
+}
+
 #[pymodule(gil_used = false)]
 #[allow(unused_variables)]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -350,10 +543,15 @@ pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(hash_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
+    m.add_function(wrap_pyfunction!(dry_download_files, m)?)?;
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
     m.add_class::<PyXetUploadInfo>()?;
+    m.add_class::<PyXetFileInfo>()?;
+    m.add_class::<PyReconstructionSummary>()?;
+    m.add_class::<PyFileTerm>()?;
+    m.add_class::<PyXorbBlock>()?;
     m.add_class::<progress_update::PyItemProgressUpdate>()?;
     m.add_class::<progress_update::PyTotalProgressUpdate>()?;
 
