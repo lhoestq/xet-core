@@ -70,8 +70,8 @@ tokio-console = ["dep:console-subscriber"]
 name = "log_test_executable"
 path = "tests/bin/log_test_executable.rs"
 
-[dev-dependencies]
-xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
+# [dev-dependencies]
+# xet-core-structures = { version = "1.4.0", path = "../xet_core_structures" }
 
 rand = { workspace = true }
 serial_test = { workspace = true }

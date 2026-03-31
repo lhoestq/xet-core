@@ -23,5 +23,7 @@ pub use xet_file::XetFileInfo;
 pub use crate::deduplication::RawXorbData;
 pub use crate::file_reconstruction::DownloadStream;
 
+pub use remote_client_interface::create_remote_client;
+
 #[cfg(debug_assertions)]
 pub mod test_utils;

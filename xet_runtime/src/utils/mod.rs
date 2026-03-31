@@ -52,5 +52,5 @@ pub use guards::{ClosureGuard, CwdGuard, EnvVarGuard};
 #[cfg(not(target_family = "wasm"))]
 pub mod pipe;
 
-mod unique_id;
+pub mod unique_id;
 pub use unique_id::UniqueId;

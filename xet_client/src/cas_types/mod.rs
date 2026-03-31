@@ -7,7 +7,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use thiserror::Error;
-use xet_core_structures::merklehash::MerkleHash;
+pub use xet_core_structures::merklehash::MerkleHash;
 
 mod key;
 pub use key::*;

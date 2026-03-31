@@ -7,6 +7,7 @@ use xet_client::cas_client::auth::TokenRefresher;
 pub use xet_data::processing::data_client::hash_files_async;
 use xet_data::processing::data_client::{clean_bytes, default_config};
 use xet_data::processing::{FileDownloadSession, FileUploadSession, Sha256Policy, XetFileInfo};
+pub use xet_data::processing::create_remote_client;
 use xet_data::{DataError, Result};
 use xet_runtime::core::par_utils::run_constrained_with_semaphore;
 use xet_runtime::core::{XetRuntime, xet_config};

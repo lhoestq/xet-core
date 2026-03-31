@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 mod logging;
 mod progress_update;
 mod runtime;
@@ -5,6 +6,7 @@ mod token_refresh;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::io::Cursor;
 use std::iter::IntoIterator;
 use std::sync::Arc;
 
@@ -17,10 +19,13 @@ use rand::Rng;
 use runtime::async_run;
 use token_refresh::WrappedTokenRefresher;
 use tracing::debug;
+use xet_client::cas_types::MerkleHash;
 use xet_pkg::XetError;
 use xet_pkg::legacy::progress_tracking::TrackingProgressUpdater;
-use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client};
-use xet_runtime::core::file_handle_limits;
+use xet_pkg::legacy::{Sha256Policy, XetFileInfo, data_client, DirtyInput, default_config};
+use xet_pkg::legacy::upload_ranges as _upload_ranges;
+use xet_runtime::core::{file_handle_limits, xet_config};
+use xet_runtime::utils::unique_id::UniqueId as UniqueID;
 
 use crate::logging::init_logging;
 use crate::progress_update::WrappedProgressUpdater;
@@ -214,6 +219,72 @@ pub fn upload_files(
         .map(PyXetUploadInfo::from)
         .collect();
         debug!("Upload call {x:x} finished.");
+        PyResult::Ok(out)
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (file_hash, file_size, ranges, endpoint, token_info, token_refresher, request_headers=None), text_signature = "(file_hash: str, file_size: int, ranges: List[PyRange], endpoint: Optional[str], token_info: Optional[(str, int)], token_refresher: Optional[Callable[[], (str, int)]], request_headers: Optional[Dict[str, str]]) -> List[PyXetUploadInfo]")]
+#[allow(clippy::too_many_arguments)]
+pub fn upload_ranges(
+    py: Python,
+    file_hash: String,
+    file_size: u64,
+    ranges: Vec<PyRange>,
+    endpoint: Option<String>,
+    token_info: Option<(String, u64)>,
+    token_refresher: Option<Py<PyAny>>,
+    request_headers: Option<HashMap<String, String>>,
+) -> PyResult<PyXetFileInfo> {
+    let x: u64 = rand::rng().random();
+    let refresher = token_refresher.map(WrappedTokenRefresher::from_func).transpose()?.map(Arc::new);
+    // Convert Python dict -> Rust HashMap -> HeaderMap and merge with USER_AGENT
+    let header_map = build_headers_with_user_agent(request_headers)?;
+    async_run(py, async move {
+        debug!(
+            "Upload ranges call {x:x}: (PID = {}) Uploading {} ranges.",
+            std::process::id(),
+            ranges.len(),
+        );
+        let original_hash_result = match MerkleHash::from_hex(file_hash.as_str()) {
+            Ok(v) => Ok(v),
+            Err(_) => Err(XetError::DataIntegrity("invalid hash".to_string())),
+        };
+        let original_hash = original_hash_result.map_err(convert_xet_error)?;
+    
+        let dirty_inputs = ranges.into_iter().map(DirtyInput::from).collect();
+        let config: Arc<xet_pkg::legacy::TranslatorConfig> = default_config(
+            endpoint.unwrap_or_else(|| xet_config().data.default_cas_endpoint.clone()),
+            token_info,
+            refresher.map(|v| v as Arc<_>),
+            header_map,
+        )
+        .map_err(convert_xet_error)?
+        .into();
+
+        let session_id = config
+        .session
+        .session_id
+        .as_ref()
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Cow::Owned(UniqueID::new().to_string()));
+
+        let cas_client = data_client::create_remote_client(&config, &session_id, false).await.map_err(convert_xet_error)?;
+
+        let out = _upload_ranges(
+            config,
+            cas_client,
+            original_hash,
+            file_size,
+            dirty_inputs,
+            file_size,
+        )
+        .await
+        .map_err(convert_xet_error)?
+        .into();
+
+        debug!("Upload bytes call {x:x} finished.");
+
         PyResult::Ok(out)
     })
 }
@@ -455,14 +526,98 @@ impl From<PyXetDownloadInfo> for (XetFileInfo, DestinationPath) {
     }
 }
 
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyRange {
+    #[pyo3(get)]
+    pub start: u64,
+    #[pyo3(get)]
+    pub end: u64,
+    #[pyo3(get)]
+    pub content: Vec<u8>,
+}
+
+#[pymethods]
+impl PyRange {
+    #[new]
+    pub fn new(start: u64, end: u64, content: Vec<u8>) -> Self {
+        Self {
+            start,
+            end,
+            content,
+        }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyRange({}, {}, content.len()={})", self.start, self.end, self.content.len())
+    }
+}
+
+impl From<PyRange> for DirtyInput {
+    fn from(pr: PyRange) -> Self {
+        Self {
+            range: pr.start..pr.end,
+            reader: Box::pin(Cursor::new(pr.content)),
+        }
+    }
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PyXetFileInfo {
+    #[pyo3(get)]
+    pub hash: String,
+    #[pyo3(get)]
+    pub file_size: Option<u64>,
+    #[pyo3(get)]
+    pub sha256: Option<String>,
+}
+
+#[pymethods]
+impl PyXetFileInfo {
+    #[new]
+    pub fn new(hash: String, file_size: Option<u64>, sha256: Option<String>) -> Self {
+        Self {
+            hash,
+            file_size,
+            sha256,
+        }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyXetFileInfo({}, {:?}, {:?})", self.hash, self.file_size, self.sha256)
+    }
+}
+
+impl From<XetFileInfo> for PyXetFileInfo {
+    fn from(xf: XetFileInfo) -> Self {
+        Self {
+            hash: xf.hash,
+            file_size: xf.file_size,
+            sha256: xf.sha256,
+        }
+    }
+}
+
 #[pymodule(gil_used = false)]
 #[allow(unused_variables)]
 pub fn hf_xet(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upload_files, m)?)?;
     m.add_function(wrap_pyfunction!(upload_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(upload_ranges, m)?)?;
     m.add_function(wrap_pyfunction!(hash_files, m)?)?;
     m.add_function(wrap_pyfunction!(download_files, m)?)?;
     m.add_function(wrap_pyfunction!(force_sigint_shutdown, m)?)?;
+    m.add_class::<PyRange>()?;
+    m.add_class::<PyXetFileInfo>()?;
     m.add_class::<PyXetUploadInfo>()?;
     m.add_class::<PyXetDownloadInfo>()?;
     m.add_class::<progress_update::PyItemProgressUpdate>()?;

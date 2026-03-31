@@ -11,8 +11,11 @@ members = [
     # Top-level crates (not published as packages)
     "git_xet",
     "simulation",
+
+    # dev
+    "hf_xet",
 ]
-exclude = ["simulation/chunk_cache_bench", "hf_xet", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm"]
+exclude = ["simulation/chunk_cache_bench", "wasm/hf_xet_wasm", "wasm/hf_xet_thin_wasm"]
 
 [workspace.package]
 version = "1.4.0"
