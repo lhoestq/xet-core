@@ -272,6 +272,8 @@ mod file_download_group;
 #[cfg(not(target_family = "wasm"))]
 mod file_download_handle;
 mod range_upload_commit;
+#[cfg(test)]
+mod range_upload_cache_tests;
 mod range_upload_edit;
 mod session;
 mod task_runtime;
@@ -291,6 +293,8 @@ pub use file_download_handle::{XetDownloadReport, XetFileDownload};
 pub use http::{HeaderMap, HeaderValue, header};
 pub use range_upload_commit::{XetRangeUploadCommit, XetRangeUploadCommitBuilder, XetRangeUploadReport};
 pub use range_upload_edit::XetRangeUploadEdit;
+// Re-export RangeEditCache types from xet_data.
+pub use xet_data::processing::range_edit_cache::{RangeEditCache, RangeEditCacheEntry};
 pub use session::{XetSession, XetSessionBuilder};
 pub use task_runtime::XetTaskState;
 pub use upload_commit::{XetCommitReport, XetFileMetadata, XetUploadCommit, XetUploadCommitBuilder};

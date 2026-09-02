@@ -12,12 +12,11 @@ use xet_core_structures::metadata_shard::file_structs::{
 };
 use xet_runtime::core::XetContext;
 
-use super::XetFileInfo;
-use super::configurations::TranslatorConfig;
-use super::file_cleaner::Sha256Policy;
-use super::file_upload_session::FileUploadSession;
+use super::range_edit_cache::{MergeComponent, RangeEditCachePayload, TermInfo};
+use super::{XetFileInfo, configurations::TranslatorConfig, file_cleaner::Sha256Policy, file_upload_session::FileUploadSession};
 use crate::error::{DataError, Result};
 use crate::file_reconstruction::FileReconstructor;
+
 
 /// A single edit applied to the original file: replace `original_range` with `new_length`
 /// bytes from `reader`.
@@ -91,19 +90,20 @@ pub async fn upload_ranges(
     original_size: u64,
     mut dirty_inputs: Vec<DirtyInput>,
     upload_session: Option<Arc<FileUploadSession>>,
-) -> Result<XetFileInfo> {
+) -> Result<(XetFileInfo, Option<RangeEditCachePayload>)> {
     validate_dirty_ranges(&dirty_inputs, original_size)?;
     let total_size = compute_total_size(original_size, &dirty_inputs)?;
 
     if dirty_inputs.is_empty() {
         debug_assert_eq!(total_size, original_size);
-        return Ok(XetFileInfo::new(original_hash.hex(), original_size));
+        return Ok((XetFileInfo::new(original_hash.hex(), original_size), None));
     }
 
     // Empty original: nothing to compose against — upload as a fresh file (concatenation of
     // the edits' new bytes, since every `original_range` must be `0..0`).
     if original_size == 0 {
-        return upload_fresh_file(config, dirty_inputs, total_size).await;
+        let (file_info, _) = upload_fresh_file(config, dirty_inputs, total_size).await?;
+        return Ok((file_info, None));
     }
 
     let recon_result = cas_client.get_file_reconstruction_info(&original_hash).await?;
@@ -182,6 +182,7 @@ pub async fn upload_ranges(
             response.windows.len() + 1
         )));
     }
+    let hash_ranges_for_cache = response.hash_ranges.clone();
     let gap_verification = response.gap_verification;
 
     let ctx = config.ctx.clone();
@@ -312,7 +313,7 @@ pub async fn upload_ranges(
     };
 
     let composed_mdb =
-        compose_mdb(&original_mdb, &seg_byte_starts, &uploaded, gap_verification, combined_hash, original_size)?;
+        compose_mdb(&original_mdb, &seg_byte_starts, &uploaded, &gap_verification, combined_hash, original_size)?;
 
     debug!(
         "upload_ranges: composed hash={}, {} segments, {} windows",
@@ -334,7 +335,104 @@ pub async fn upload_ranges(
         total_dirty
     );
 
-    Ok(XetFileInfo::new(combined_hash.hex(), total_size))
+    // Build the RangeEditCachePayload for later cache population.
+    // This captures the merge sequence components and term information needed
+    // to split the merge at the last term boundary and build the cache entry.
+    let cache_payload = build_range_edit_cache_payload(
+        &original_mdb,
+        &uploaded,
+        &gap_verification,
+        &hash_ranges_for_cache,
+        combined_hash.hex(),
+        total_size,
+        original_size,
+    );
+
+    let file_info = XetFileInfo::new(combined_hash.hex(), total_size);
+    Ok((file_info, cache_payload))
+}
+
+/// Build the cache payload from upload_ranges' internal state.
+///
+/// This captures the merge sequence components (gaps + windows with subtrees/chunks)
+/// and the original file's terms, which are needed to build a RangeEditCacheEntry
+/// after the upload completes.
+fn build_range_edit_cache_payload(
+    original_mdb: &MDBFileInfo,
+    uploaded: &[UploadedWindow],
+    gap_verification: &[HexMerkleHash],
+    hash_ranges: &[Option<MerkleHashSubtree>],
+    file_hash: String,
+    new_size: u64,
+    original_size: u64,
+) -> Option<RangeEditCachePayload> {
+    use super::range_edit_cache::{MergeComponent, RangeEditCachePayload, TermInfo};
+
+    // Extract terms from the original file's segments.
+    let terms: Vec<TermInfo> = {
+        let mut term_list = Vec::with_capacity(original_mdb.segments.len());
+        for (seg_idx, seg) in original_mdb.segments.iter().enumerate() {
+            // Find the verification range hash for this segment.
+            // Gap verification hashes correspond to stable (untouched) segments.
+            let range_hash = if seg_idx < gap_verification.len() {
+                gap_verification[seg_idx].to_string()
+            } else {
+                String::new()
+            };
+
+            term_list.push(TermInfo {
+                xorb_hash: seg.xorb_hash.hex(),
+                unpacked_length: seg.unpacked_segment_bytes as u64,
+                chunk_range: (seg.chunk_index_start as u64, seg.chunk_index_end as u64),
+            });
+        }
+        term_list
+    };
+
+    // Build merge components from hash_ranges and uploaded windows.
+    // The merge sequence is: [gap0, window0, gap1, window1, ..., gapN]
+    // where gaps are from hashRanges (untouched regions) and windows are from uploaded chunks.
+    // We rebuild the merge sequence exactly as upload_ranges does.
+    let merge_components: Vec<MergeComponent> = {
+        let mut components: Vec<MergeComponent> = Vec::new();
+
+        // NOTE: hash_ranges is a COPY of the original vector.
+        let mut hash_ranges_copy = hash_ranges.to_vec();
+        let trailing_gap = hash_ranges_copy.pop();
+        let first_window_at_start = matches!(hash_ranges_copy.first(), Some(None));
+        let last_window_at_end = trailing_gap.is_none();
+        let last_idx = uploaded.len() - 1;
+
+        // Build the merge sequence by iterating over uploaded and hash_ranges in parallel.
+        for (i, (window, gap)) in uploaded.iter().zip(&hash_ranges_copy).enumerate() {
+            // Push gap (if present).
+            // gap is &Option<MerkleHashSubtree>, so clone it and pass to MergeComponent::Gap.
+            components.push(MergeComponent::Gap(gap.clone()));
+            // Push window.
+            let at_start = i == 0 && first_window_at_start;
+            let at_end = i == last_idx && last_window_at_end;
+            components.push(MergeComponent::Window {
+                chunks: window.chunks.clone(),
+                at_start,
+                at_end,
+            });
+        }
+        // Push trailing gap (if present).
+        if let Some(ref g) = trailing_gap {
+            // g is &Option<MerkleHashSubtree>, clone it directly.
+            components.push(MergeComponent::Gap(g.clone()));
+        }
+
+        components
+    };
+
+    Some(RangeEditCachePayload {
+        file_hash,
+        new_size,
+        original_size,
+        terms,
+        merge_components,
+    })
 }
 
 /// Assemble the composed MDB by splicing uploaded window segments into the original
@@ -344,7 +442,7 @@ fn compose_mdb(
     original_mdb: &MDBFileInfo,
     seg_byte_starts: &[u64],
     uploaded: &[UploadedWindow],
-    gap_verification: Vec<HexMerkleHash>,
+    gap_verification: &[HexMerkleHash],
     combined_hash: MerkleHash,
     original_size: u64,
 ) -> Result<MDBFileInfo> {
@@ -478,7 +576,7 @@ async fn upload_fresh_file(
     config: Arc<TranslatorConfig>,
     mut dirty_inputs: Vec<DirtyInput>,
     total_size: u64,
-) -> Result<XetFileInfo> {
+) -> Result<(XetFileInfo, Option<RangeEditCachePayload>)> {
     let session = FileUploadSession::new(config).await?;
     let (_id, mut cleaner) = session.start_clean(None, Some(total_size), Sha256Policy::Skip)?;
     for input in &mut dirty_inputs {
@@ -495,7 +593,7 @@ async fn upload_fresh_file(
     }
     let (info, _metrics) = cleaner.finish().await?;
     session.finalize().await?;
-    Ok(info)
+    Ok((info, None))
 }
 
 /// Stream a byte range from CAS into the cleaner.

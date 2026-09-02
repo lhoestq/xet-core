@@ -18,7 +18,7 @@ def endpoint(tmp_path):
 
 # ── Upload helpers ────────────────────────────────────────────────────────────
 
-def upload_bytes_get_info(endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
+def upload_bytes_get_info(endpoint: str, data: bytes) -> "hf_xet.XetFileInfo":
     """Upload raw bytes, commit, and return the resulting XetFileInfo."""
     commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
     h = commit.start_upload_bytes(data, sha256=hf_xet.SKIP_SHA256)
@@ -26,7 +26,7 @@ def upload_bytes_get_info(endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
     return h.result().xet_info
 
 
-def upload_file_get_info(endpoint: str, tmp_path, data: bytes) -> hf_xet.XetFileInfo:
+def upload_file_get_info(endpoint: str, tmp_path, data: bytes) -> "hf_xet.XetFileInfo":
     """Write data to a temp file, upload it, and return the resulting XetFileInfo."""
     import uuid
     src = tmp_path / f"upload_src_{uuid.uuid4().hex}.bin"
@@ -37,7 +37,7 @@ def upload_file_get_info(endpoint: str, tmp_path, data: bytes) -> hf_xet.XetFile
     return h.result().xet_info
 
 
-def upload_stream_get_info(endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
+def upload_stream_get_info(endpoint: str, data: bytes) -> "hf_xet.XetFileInfo":
     """Upload data via upload_stream and return the resulting XetFileInfo."""
     commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
     stream = commit.start_upload_stream()

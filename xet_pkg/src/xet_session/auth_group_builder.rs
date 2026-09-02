@@ -31,6 +31,8 @@ pub(super) struct AuthOptions {
 pub struct AuthGroupBuilder<G> {
     pub(super) session: XetSession,
     pub(super) auth_options: AuthOptions,
+    /// Optional range-edit cache (used only by XetRangeUploadCommit).
+    pub(super) cache: Option<std::sync::Arc<xet_data::processing::range_edit_cache::RangeEditCache>>,
     _marker: PhantomData<G>,
 }
 
@@ -39,6 +41,7 @@ impl<G> AuthGroupBuilder<G> {
         Self {
             session,
             auth_options: Default::default(),
+            cache: None,
             _marker: PhantomData,
         }
     }

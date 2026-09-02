@@ -6,8 +6,12 @@ mod file_download_session;
 mod file_upload_session;
 #[cfg(not(target_family = "wasm"))]
 pub mod migration_tool;
+pub mod range_edit_cache;
 pub mod range_upload;
 mod remote_client_interface;
+
+// Re-export range_edit_cache types.
+pub use range_edit_cache::{build_cache_entry_from_payload, RangeEditCache, RangeEditCacheEntry, TermInfo, MergeComponent};
 mod sha256;
 mod shard_interface;
 mod xet_file;

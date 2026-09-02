@@ -13,7 +13,7 @@ import hf_xet
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _upload_bytes(session: hf_xet.XetSession, endpoint: str, data: bytes) -> hf_xet.XetFileInfo:
+def _upload_bytes(session: "hf_xet.XetSession", endpoint: str, data: bytes) -> "hf_xet.XetFileInfo":
     """Upload raw bytes via the regular upload commit and return XetFileInfo."""
     commit = session.new_upload_commit(endpoint=endpoint)
     h = commit.start_upload_bytes(data, sha256=hf_xet.SKIP_SHA256)
@@ -21,7 +21,7 @@ def _upload_bytes(session: hf_xet.XetSession, endpoint: str, data: bytes) -> hf_
     return h.result().xet_info
 
 
-def _download_via_group(session: hf_xet.XetSession, endpoint: str, file_info: hf_xet.XetFileInfo, dest_path: str):
+def _download_via_group(session: "hf_xet.XetSession", endpoint: str, file_info: "hf_xet.XetFileInfo", dest_path: str):
     """Download a file via the file download group and return the file info."""
     group = session.new_file_download_group(endpoint=endpoint)
     h = group.start_download_file(file_info, dest_path)
@@ -196,3 +196,79 @@ class TestRangeUploadMultipleEdits:
         _download_via_group(session, endpoint, report.file_info, str(dest_path))
         content = dest_path.read_bytes()
         assert content == b"XXXX4567---89ABCD"
+
+
+# ── Successive edits ────────────────────────────────────────────────────────
+
+class TestRangeUploadSuccessiveEdits:
+    """Test: apply multiple range edits sequentially, each built on the previous result."""
+
+    def test_e2e_range_upload_successive_appends(self, endpoint, tmp_path):
+        """Test two successive append operations."""
+        original_data = b"Hello, "
+        session = hf_xet.XetSession()
+
+        # Step 1: upload original
+        info = _upload_bytes(session, endpoint, original_data)
+        assert info.file_size == 7
+
+        # Step 2: first append — "World"
+        commit1 = session.new_range_upload(info.hash, info.file_size, endpoint=endpoint)
+        edit1 = commit1.append(5)
+        edit1.write(b"World")
+        report1 = commit1.commit()
+        assert report1.file_info.file_size == 12
+
+        dest1 = tmp_path / "step1.txt"
+        _download_via_group(session, endpoint, report1.file_info, str(dest1))
+        assert dest1.read_bytes() == b"Hello, World"
+
+        # Step 3: second append on the new file — "!"
+        commit2 = session.new_range_upload(
+            report1.file_info.hash, report1.file_info.file_size, endpoint=endpoint
+        )
+        edit2 = commit2.append(1)
+        edit2.write(b"!")
+        report2 = commit2.commit()
+        assert report2.file_info.file_size == 13
+
+        dest2 = tmp_path / "step2.txt"
+        _download_via_group(session, endpoint, report2.file_info, str(dest2))
+        content = dest2.read_bytes()
+        assert content == b"Hello, World!"
+
+    def test_e2e_range_upload_edit_then_append(self, endpoint, tmp_path):
+        """Test: edit then append — mixed operations across successive commits."""
+        original_data = b"Hello, World!"
+        session = hf_xet.XetSession()
+
+        # Step 1: upload original
+        info = _upload_bytes(session, endpoint, original_data)
+        assert info.file_size == 13
+
+        # Step 2: edit "World" -> "Universe" at position 7 (7 -> 8 bytes, +3 total)
+        # "World" is 5 bytes (positions 7..12), replacing with 8-byte "Universe"
+        # Expected: 13 - 5 + 8 = 16
+        commit1 = session.new_range_upload(info.hash, info.file_size, endpoint=endpoint)
+        edit1 = commit1.edit((7, 12), 8)
+        edit1.write(b"Universe")
+        report1 = commit1.commit()
+        assert report1.file_info.file_size == 16
+
+        dest1 = tmp_path / "step1.txt"
+        _download_via_group(session, endpoint, report1.file_info, str(dest1))
+        assert dest1.read_bytes() == b"Hello, Universe!"
+
+        # Step 3: append " again" at end (6 bytes added)
+        commit2 = session.new_range_upload(
+            report1.file_info.hash, report1.file_info.file_size, endpoint=endpoint
+        )
+        edit2 = commit2.append(6)
+        edit2.write(b" again")
+        report2 = commit2.commit()
+        assert report2.file_info.file_size == 22
+
+        dest2 = tmp_path / "step2.txt"
+        _download_via_group(session, endpoint, report2.file_info, str(dest2))
+        content = dest2.read_bytes()
+        assert content == b"Hello, Universe! again"
